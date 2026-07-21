@@ -1,20 +1,25 @@
-FROM node:22-alpine
+FROM node:22-slim
 
 ENV NODE_ENV=production
 ENV PORT=3333
 ENV HOST=0.0.0.0
+ENV DB_FILE=/app/data/listen-together.db
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
 COPY src ./src
 
+# Diretório persistido via volume (contas e amizades ficam aqui).
+RUN mkdir -p /app/data && chown -R node:node /app
+
 USER node
 EXPOSE 3333
+VOLUME ["/app/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --quiet --tries=1 --spider http://127.0.0.1:3333/health || exit 1
+  CMD node -e "require('http').get('http://127.0.0.1:3333/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 
 CMD ["node", "src/index.cjs"]

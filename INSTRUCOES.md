@@ -1,69 +1,37 @@
 # Instruções rápidas — Listen Together
 
-## Parte 1 — subir o servidor no Portainer
+## Parte 1 — subir o servidor
 
-### Sem domínio, para primeiro teste
-
-1. Coloque este projeto em um repositório Git.
-2. No Portainer, acesse **Stacks → Add stack → Git Repository**.
-3. Informe a URL do repositório.
-4. Use como Compose path:
-
-```text
-portainer-stack.yml
-```
-
-5. Adicione as variáveis:
-
-```env
-SERVER_NAME=Listen Together
-PUBLIC_PORT=3333
-ALLOWED_ORIGINS=*
-MAX_ROOMS=500
-MAX_MEMBERS_PER_ROOM=30
-ROOM_IDLE_TTL_MS=21600000
-```
-
-6. Faça o deploy.
-7. Libere a porta `3333/TCP` no firewall.
-8. Teste:
+No servidor Linux (SSH), com Docker + Compose V2:
 
 ```bash
-curl http://IP_DO_SERVIDOR:3333/health
+cd /opt
+git clone <URL_DO_REPOSITORIO> play-togheter
+cd play-togheter
+docker compose -f portainer-stack.yml up -d --build
 ```
 
-A URL usada no Electron será:
+Teste:
+
+```bash
+curl http://127.0.0.1:3333/health
+```
+
+Libere a porta `3333/TCP` no firewall. A URL dos aplicativos será:
 
 ```text
 http://IP_DO_SERVIDOR:3333
 ```
 
-### Com domínio e HTTPS automático
+Para atualizar depois:
 
-1. Aponte o domínio para o IP do servidor.
-2. Libere as portas `80/TCP`, `443/TCP` e `443/UDP`.
-3. No Portainer, use:
-
-```text
-portainer-stack-caddy.yml
+```bash
+cd /opt/play-togheter
+git pull
+docker compose -f portainer-stack.yml up -d --build
 ```
 
-4. Configure:
-
-```env
-DOMAIN=listen-api.seudominio.com
-SERVER_NAME=Listen Together
-ALLOWED_ORIGINS=*
-MAX_ROOMS=500
-MAX_MEMBERS_PER_ROOM=30
-ROOM_IDLE_TTL_MS=21600000
-```
-
-5. No Electron, use:
-
-```text
-https://listen-api.seudominio.com
-```
+> As contas e amizades ficam no volume Docker `listen_together_data` — não apague esse volume.
 
 ## Parte 2 — configurar o Spotify
 
@@ -71,67 +39,62 @@ No Spotify Developer Dashboard:
 
 1. Crie um aplicativo.
 2. Copie o Client ID.
-3. Cadastre exatamente:
+3. Cadastre exatamente este Redirect URI (é o loopback local do app, igual para todo mundo — não é o IP do servidor):
 
 ```text
 http://127.0.0.1:43821/callback
 ```
 
-4. Adicione as contas dos amigos em **Users and Access**, enquanto o aplicativo estiver em Development Mode.
+4. Em **Settings → User Management**, adicione o e-mail da conta Spotify de cada amigo (obrigatório em Development Mode — não existe curinga `*`).
+5. Todos precisam de **Spotify Premium**.
 
-## Parte 3 — gerar o Electron
+## Parte 3 — gerar os aplicativos
 
 ```bash
 cd client
 cp .env.example .env
 ```
 
-Edite `.env`:
+Edite o `.env`:
 
 ```env
 VITE_SPOTIFY_CLIENT_ID=SEU_CLIENT_ID
 VITE_SPOTIFY_REDIRECT_URI=http://127.0.0.1:43821/callback
-VITE_DEFAULT_SERVER_URL=https://listen-api.seudominio.com
+VITE_DEFAULT_SERVER_URL=http://IP_DO_SERVIDOR:3333
 ```
 
 Instale e gere:
 
 ```bash
 npm install
-npm run build:linux
+npm run build:win     # no Windows: instalador + portátil
+npm run build:linux   # no Linux: AppImage + deb
 ```
 
-Os arquivos serão criados em:
+Para gerar o Linux no próprio servidor (sem Node instalado no host):
 
-```text
-client/release/
+```bash
+docker run --rm -v /opt/play-togheter/client:/project -w /project \
+  electronuserland/builder:latest \
+  bash -c "npm install --no-audit --no-fund && npm run build:linux"
 ```
+
+Os arquivos ficam em `client/release/`.
 
 ## Parte 4 — instalar e conectar os amigos
 
-1. Envie o `.AppImage` ou `.deb` para cada amigo.
-2. A pessoa abre o aplicativo.
-3. Clica em **Configurar servidor**.
-4. Digita a mesma URL pública.
-5. Clica em **Testar conexão**.
-6. Clica em **Salvar e conectar**.
-7. Vincula a própria conta Spotify.
-8. Digita o código da sala criado pelo host.
-9. Ativa **Sincronizar meu Spotify com o host**.
+1. Envie o executável para cada amigo (`.exe` no Windows, `.AppImage`/`.deb` no Linux).
+2. A pessoa abre o aplicativo, clica em **Configurar servidor**, digita a URL, testa e salva.
+3. Vincula a própria conta Spotify.
+4. Abre **Amigos**, copia o próprio código e troca com os amigos para se adicionarem.
+5. O host cria a sala e clica em **Convidar** nos amigos online (ou compartilha o código da sala).
+6. Cada convidado ativa **Sincronizar meu Spotify com o host**.
 
-## Testar o AppImage
-
-```bash
-chmod +x Listen-Together-3.0.0-x86_64.AppImage
-./Listen-Together-3.0.0-x86_64.AppImage
-```
-
-O nome pode variar conforme arquitetura e versão.
-
-## Onde fica a configuração do Electron
+## Onde fica a configuração do aplicativo
 
 ```text
-~/.config/Listen Together/config.json
+Windows: %APPDATA%\Listen Together\config.json
+Linux:   ~/.config/Listen Together/config.json
 ```
 
-Não é necessário gerar um instalador diferente para cada servidor. A URL pode ser alterada dentro do aplicativo.
+O mesmo arquivo (mesmo formato) guarda a URL do servidor e a conta de amigo. Não é necessário gerar um instalador diferente para cada servidor — a URL pode ser trocada dentro do aplicativo.

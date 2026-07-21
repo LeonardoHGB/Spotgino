@@ -14,7 +14,7 @@ export function normalizeServerUrl(value) {
   try {
     parsed = new URL(raw);
   } catch {
-    throw new Error("URL inválida. Exemplo: https://listen-api.seudominio.com");
+    throw new Error("URL inválida. Exemplo: http://192.168.230.217:3333");
   }
 
   if (!["http:", "https:"].includes(parsed.protocol)) {

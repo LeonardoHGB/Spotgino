@@ -13,20 +13,21 @@
     "dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
     "build:web": "vite build",
     "build:linux": "npm run build:web && electron-builder --linux AppImage deb",
+    "build:win": "npm run build:web && electron-builder --win nsis portable",
     "check": "node --check electron/main.cjs && node --check electron/preload.cjs && vite build"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "^5.0.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "socket.io-client": "^4.8.3",
-    "vite": "^7.3.6"
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "electron": "^39.2.3",
     "electron-builder": "^26.0.12",
+    "vite": "^7.3.6",
     "wait-on": "^9.0.3"
   },
   "build": {
@@ -46,6 +47,13 @@
         "deb"
       ],
       "category": "AudioVideo",
+      "artifactName": "Listen-Together-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
       "artifactName": "Listen-Together-${version}-${arch}.${ext}"
     }
   }

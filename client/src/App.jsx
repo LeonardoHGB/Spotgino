@@ -14,6 +14,7 @@ import {
   hasSpotifySession,
   spotifyApi
 } from "./spotify";
+import { useFriends, FriendsPanel, InviteToasts } from "./friends";
 
 const HOST_POLL_INTERVAL = 4500;
 const GUEST_DRIFT_INTERVAL = 15000;
@@ -148,6 +149,7 @@ export default function App() {
   const [serverUrl, setServerUrl] = useState("");
   const [serverDraft, setServerDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [friendsOpen, setFriendsOpen] = useState(false);
   const [serverTestStatus, setServerTestStatus] = useState({ ok: false, message: "" });
   const [savingServer, setSavingServer] = useState(false);
   const [socketConnected, setSocketConnected] = useState(false);
@@ -183,6 +185,13 @@ export default function App() {
 
   const isHost = Boolean(room && room.hostId === getSocket()?.id);
   const currentTrack = room?.playback?.track || null;
+
+  const friendsHub = useFriends({
+    socketConnected,
+    displayName,
+    onJoinRoom: (code) => joinRoomByCode(code),
+    notify: setNotice
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -582,9 +591,16 @@ export default function App() {
   }
 
   function joinRoom() {
+    joinRoomByCode(roomCode);
+  }
+
+  function joinRoomByCode(code) {
+    const target = String(code || "").trim().toUpperCase();
+    if (!target) return;
+    setRoomCode(target);
     getSocket()?.emit(
       "room:join",
-      { code: roomCode, displayName: persistName() },
+      { code: target, displayName: persistName() },
       (result) => {
         if (!result?.ok) {
           setNotice(result?.message || "Não foi possível entrar na sala.");
@@ -962,6 +978,13 @@ export default function App() {
             </button>
           </div>
 
+          <button className="friends-button" onClick={() => setFriendsOpen(true)}>
+            <span>Amigos</span>
+            {friendsHub.incoming.length > 0 && (
+              <span className="friends-badge">{friendsHub.incoming.length}</span>
+            )}
+          </button>
+
           {notice && <div className="notice">{notice}</div>}
           {connectionError && <div className="error-box">{connectionError}</div>}
         </section>
@@ -975,6 +998,27 @@ export default function App() {
         onSave={saveServerSettings}
         testStatus={serverTestStatus}
         saving={savingServer}
+      />
+      <FriendsPanel
+        open={friendsOpen}
+        onClose={() => setFriendsOpen(false)}
+        account={friendsHub.account}
+        friends={friendsHub.friends}
+        incoming={friendsHub.incoming}
+        outgoing={friendsHub.outgoing}
+        onAdd={friendsHub.addFriend}
+        onAccept={friendsHub.acceptFriend}
+        onDecline={friendsHub.declineFriend}
+        onRemove={friendsHub.removeFriend}
+        onInvite={friendsHub.inviteFriend}
+        inRoom={false}
+        roomCode={undefined}
+        notify={setNotice}
+      />
+      <InviteToasts
+        invites={friendsHub.invites}
+        onAccept={friendsHub.acceptInvite}
+        onDismiss={friendsHub.dismissInvite}
       />
       </>
     );
@@ -1002,6 +1046,13 @@ export default function App() {
           <span>Código da sala</span>
           <strong>{room.code}</strong>
           <small>Clique para copiar</small>
+        </button>
+
+        <button className="friends-button sidebar-friends" onClick={() => setFriendsOpen(true)}>
+          <span>Amigos</span>
+          {friendsHub.incoming.length > 0 && (
+            <span className="friends-badge">{friendsHub.incoming.length}</span>
+          )}
         </button>
 
         <section className="panel-section">
@@ -1343,6 +1394,27 @@ export default function App() {
       onSave={saveServerSettings}
       testStatus={serverTestStatus}
       saving={savingServer}
+    />
+    <FriendsPanel
+      open={friendsOpen}
+      onClose={() => setFriendsOpen(false)}
+      account={friendsHub.account}
+      friends={friendsHub.friends}
+      incoming={friendsHub.incoming}
+      outgoing={friendsHub.outgoing}
+      onAdd={friendsHub.addFriend}
+      onAccept={friendsHub.acceptFriend}
+      onDecline={friendsHub.declineFriend}
+      onRemove={friendsHub.removeFriend}
+      onInvite={friendsHub.inviteFriend}
+      inRoom={Boolean(room)}
+      roomCode={room?.code}
+      notify={setNotice}
+    />
+    <InviteToasts
+      invites={friendsHub.invites}
+      onAccept={friendsHub.acceptInvite}
+      onDismiss={friendsHub.dismissInvite}
     />
     </>
   );
