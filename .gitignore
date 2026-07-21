@@ -4,7 +4,17 @@ release/
 .env
 *.log
 .DS_Store
+.idea/
+.impeccable/
 client/node_modules/
 server/node_modules/
 client/dist/
 client/release/
+
+# Banco SQLite local (produção usa volume Docker)
+data/
+server/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

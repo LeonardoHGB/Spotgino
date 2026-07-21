@@ -5,7 +5,7 @@ const path = require("path");
 
 const CALLBACK_HOST = "127.0.0.1";
 const CALLBACK_PORT = 43821;
-const DEFAULT_SERVER_URL = process.env.LISTEN_TOGETHER_SERVER_URL || "http://127.0.0.1:3333";
+const DEFAULT_SERVER_URL = process.env.LISTEN_TOGETHER_SERVER_URL || "http://192.168.230.217:3333";
 
 let mainWindow;
 let spotifyCallbackServer;
@@ -21,30 +21,70 @@ function normalizeServerUrl(value) {
   return parsed.toString().replace(/\/$/, "");
 }
 
+const CONFIG_VERSION = 2;
+
+// Config única e idêntica em Windows (%APPDATA%) e Linux (~/.config),
+// abstraída por app.getPath("userData").
 function getConfigPath() {
   return path.join(app.getPath("userData"), "config.json");
 }
 
-function readConfig() {
+function readRawConfig() {
   try {
-    const content = fs.readFileSync(getConfigPath(), "utf8");
-    const parsed = JSON.parse(content);
-    return {
-      serverUrl: normalizeServerUrl(parsed.serverUrl || DEFAULT_SERVER_URL)
-    };
+    const parsed = JSON.parse(fs.readFileSync(getConfigPath(), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
-    return { serverUrl: normalizeServerUrl(DEFAULT_SERVER_URL) };
+    return {};
   }
 }
 
-function writeConfig(nextConfig) {
-  const config = {
-    serverUrl: normalizeServerUrl(nextConfig.serverUrl)
-  };
-
+function persistRawConfig(config) {
   fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
   fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), "utf8");
-  return config;
+}
+
+function sanitizeAccount(account) {
+  if (!account || typeof account !== "object") return null;
+  const userId = typeof account.userId === "string" ? account.userId : "";
+  const token = typeof account.token === "string" ? account.token : "";
+  if (!userId || !token) return null;
+  return {
+    userId,
+    token,
+    displayName:
+      typeof account.displayName === "string" ? account.displayName : ""
+  };
+}
+
+function readConfig() {
+  const raw = readRawConfig();
+  let serverUrl;
+  try {
+    serverUrl = normalizeServerUrl(raw.serverUrl || DEFAULT_SERVER_URL);
+  } catch {
+    serverUrl = normalizeServerUrl(DEFAULT_SERVER_URL);
+  }
+  return {
+    version: CONFIG_VERSION,
+    serverUrl,
+    account: sanitizeAccount(raw.account)
+  };
+}
+
+function writeConfig(nextConfig) {
+  const raw = readRawConfig();
+  raw.version = CONFIG_VERSION;
+  raw.serverUrl = normalizeServerUrl(nextConfig.serverUrl);
+  persistRawConfig(raw);
+  return { serverUrl: raw.serverUrl };
+}
+
+function writeAccount(account) {
+  const raw = readRawConfig();
+  raw.version = CONFIG_VERSION;
+  raw.account = sanitizeAccount(account);
+  persistRawConfig(raw);
+  return raw.account;
 }
 
 async function testServer(serverUrl) {
@@ -226,6 +266,8 @@ ipcMain.handle("open-external", async (_event, url) => {
 ipcMain.handle("app-config:get", () => readConfig());
 ipcMain.handle("app-config:save-server", (_event, serverUrl) => writeConfig({ serverUrl }));
 ipcMain.handle("app-config:test-server", (_event, serverUrl) => testServer(serverUrl));
+ipcMain.handle("app-account:save", (_event, account) => writeAccount(account));
+ipcMain.handle("app-account:clear", () => writeAccount(null));
 
 app.whenReady().then(() => {
   startSpotifyCallbackServer();

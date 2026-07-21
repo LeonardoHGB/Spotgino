@@ -1,22 +1,18 @@
-# Listen Together v3 — Electron + Spotify + Portainer
+# Listen Together v3 — Electron + Spotify + Docker
 
-Projeto completo para criar salas sincronizadas usando Spotify Connect.
+Salas sincronizadas usando Spotify Connect. O host toca; os amigos ouvem juntos, cada um na própria conta Spotify.
 
-## O que esta versão resolve
+## O que esta versão faz
 
-- Backend separado do Electron.
-- Servidor pronto para Docker e Portainer.
-- URL do servidor configurável dentro do aplicativo instalado.
-- Configuração persistente sem recompilar o Electron.
-- Teste do endpoint `/health` pela tela de configuração.
-- Suporte a domínio HTTPS e WebSocket.
-- Stack para build pelo Git, Stack com imagem GHCR e Stack com Caddy.
-- OAuth Spotify PKCE com callback local.
-- Renovação automática do access token.
-- Busca de músicas.
-- Leitura automática do que o host está ouvindo no Spotify.
-- Sincronização de play, pause, faixa e posição com os convidados.
-- Chat, fila e modo demonstração.
+- Backend Node.js + Socket.IO separado do Electron, pronto para Docker.
+- URL do servidor configurável dentro do aplicativo instalado (sem recompilar).
+- OAuth Spotify PKCE com callback local e renovação automática de token.
+- Leitura automática do que o host está ouvindo e sincronização de play, pause, faixa e posição.
+- Busca de músicas, chat, fila e modo demonstração.
+- **Contas persistentes com código de amigo** (SQLite no servidor).
+- **Aba de Amigos**: adicionar por código, aceitar/recusar pedidos, ver quem está online.
+- **Convites de sala**: convide um amigo online e ele entra com um clique.
+- Builds para **Windows** (instalador + portátil) e **Linux** (AppImage + deb).
 
 ## Arquitetura
 
@@ -29,14 +25,15 @@ Projeto completo para criar salas sincronizadas usando Spotify Connect.
 │ Token individual do usuário │
 │ Controle Spotify Connect    │
 └──────────────┬──────────────┘
-               │ HTTPS + Socket.IO
+               │ HTTP + Socket.IO (IP:porta)
                ▼
 ┌─────────────────────────────┐
-│ Docker / Portainer          │
+│ Docker (servidor Linux)     │
 │                             │
 │ Node.js + Express           │
 │ Socket.IO                   │
-│ Salas, fila e chat          │
+│ Salas, fila e chat (memória)│
+│ Contas e amigos (SQLite)    │
 └─────────────────────────────┘
 ```
 
@@ -45,172 +42,136 @@ O servidor não recebe nem retransmite áudio. Cada usuário reproduz diretament
 ## Estrutura
 
 ```text
-listen-together-portainer/
-├── client/                         # Electron + React
-│   ├── electron/
-│   ├── src/
+play-togheter/
+├── client/                    # Electron + React
+│   ├── electron/              #   main.cjs, preload.cjs
+│   ├── src/                   #   App.jsx, friends.jsx, spotify.js, socket.js
 │   ├── .env.example
-│   ├── package.json
-│   └── README.md
-├── server/                         # Node.js + Socket.IO
-│   ├── src/index.cjs
-│   ├── Dockerfile
 │   └── package.json
-├── deploy/
-│   ├── stack-portainer-build.yml
-│   ├── stack-portainer-image.yml
-│   ├── stack-portainer-caddy.yml
-│   ├── Caddyfile
-│   ├── .env.server.example
-│   └── PORTAINER.md
-├── .github/workflows/
-│   └── publish-server-image.yml
-├── docker-compose.yml
-└── package.json
+├── server/                    # Node.js + Socket.IO
+│   ├── src/index.cjs          #   API, salas, contas, amigos, convites
+│   ├── src/db.cjs             #   SQLite (better-sqlite3)
+│   ├── Dockerfile             #   node:22-slim
+│   └── package.json
+├── portainer-stack.yml        # Stack única de produção (com volume do banco)
+└── package.json               # Scripts de desenvolvimento
 ```
 
-## Testar localmente
+## Subir o servidor (produção)
 
-### 1. Configurar o cliente
+No servidor Linux (com Docker + Compose V2):
 
 ```bash
-cd client
-cp .env.example .env
+cd /opt
+git clone <URL_DO_REPOSITORIO> play-togheter
+cd play-togheter
+docker compose -f portainer-stack.yml up -d --build
 ```
 
-Edite o `.env` e informe seu Spotify Client ID.
-
-### 2. Instalar dependências
-
-Na raiz:
-
-```bash
-npm install
-```
-
-### 3. Iniciar o servidor
-
-Com Node.js:
-
-```bash
-npm run dev:server
-```
-
-Ou com Docker:
-
-```bash
-docker compose up --build
-```
-
-Health check:
+Teste:
 
 ```bash
 curl http://127.0.0.1:3333/health
 ```
 
-### 4. Iniciar Electron
+Libere a porta `3333/TCP` no firewall. A URL usada nos aplicativos será `http://IP_DO_SERVIDOR:3333`.
 
-Em outro terminal:
+> Também funciona pelo Portainer: **Stacks → Add stack → Git Repository**, Compose path `portainer-stack.yml`.
+
+### Atualizar o servidor
 
 ```bash
-npm run dev:client
+cd /opt/play-togheter
+git pull
+docker compose -f portainer-stack.yml up -d --build
 ```
 
-Na tela inicial, a URL padrão será:
+### Persistência
 
-```text
-http://127.0.0.1:3333
+Contas e amizades ficam no volume Docker `listen_together_data` (SQLite). **Não apague esse volume** — ele sobrevive a rebuilds e reinícios. Salas, filas e chats são em memória e zeram quando o container reinicia. Use uma única réplica.
+
+### Variáveis do servidor
+
+| Variável | Padrão | Descrição |
+|---|---:|---|
+| `PORT` | `3333` | Porta interna do Node.js. |
+| `HOST` | `0.0.0.0` | Interface de rede. |
+| `PUBLIC_PORT` | `3333` | Porta publicada no host. |
+| `SERVER_NAME` | `Listen Together` | Nome mostrado no health check. |
+| `ALLOWED_ORIGINS` | `*` | Lista separada por vírgulas. |
+| `MAX_ROOMS` | `500` | Limite de salas simultâneas. |
+| `MAX_MEMBERS_PER_ROOM` | `30` | Limite de participantes por sala. |
+| `ROOM_IDLE_TTL_MS` | `21600000` | Tempo máximo de sala ociosa (ms). |
+| `DB_FILE` | `/app/data/listen-together.db` | Caminho do banco SQLite. |
+
+## Testar localmente
+
+```bash
+npm run install:all
+npm run dev:server    # servidor em http://127.0.0.1:3333
+npm run dev:client    # Electron em outro terminal
 ```
 
-## Subir no Portainer
+Rodando o servidor fora do Docker, o banco é criado em `server/data/` (ignorado pelo Git).
 
-As instruções completas estão em:
+## Configurar o Spotify
 
-```text
-deploy/PORTAINER.md
-```
+No [Spotify Developer Dashboard](https://developer.spotify.com/dashboard):
 
-Caminho recomendado para começar:
+1. Crie um aplicativo e copie o **Client ID**.
+2. Cadastre o Redirect URI **exatamente**: `http://127.0.0.1:43821/callback`
+   (é o loopback local do app em cada máquina — **não** é o IP do servidor).
+3. Em **Settings → User Management**, adicione o e-mail da conta Spotify de **cada** pessoa (obrigatório em Development Mode; não existe curinga).
+4. Todos precisam de **Spotify Premium** para os comandos de reprodução.
 
-1. Suba o projeto em um GitHub ou GitLab.
-2. No Portainer, crie uma Stack por Git Repository.
-3. Informe o Compose path `portainer-stack.yml`.
-4. Publique a porta `3333` ou configure proxy reverso.
-5. No Electron, abra **Configurar servidor**.
-6. Informe `https://listen-api.seudominio.com`.
-7. Clique em **Testar conexão** e depois **Salvar e conectar**.
+## Gerar os aplicativos
 
-## Gerar o Electron para distribuir
+Configure antes:
 
 ```bash
 cd client
-cp .env.example .env
-# Edite o Spotify Client ID
+cp .env.example .env   # preencha o VITE_SPOTIFY_CLIENT_ID
 npm install
-npm run build:linux
 ```
 
-Os instaladores serão criados em:
+**Windows** (nesta máquina Windows):
 
-```text
-client/release/
+```bash
+npm run build:win
 ```
 
-Você poderá enviar o mesmo `.AppImage` ou `.deb` para seus amigos. Eles não precisam editar `.env`: basta abrir o aplicativo e configurar a URL pública do servidor.
+**Linux** (no servidor, via Docker — não precisa de Node no host):
+
+```bash
+docker run --rm -v /opt/play-togheter/client:/project -w /project \
+  electronuserland/builder:latest \
+  bash -c "npm install --no-audit --no-fund && npm run build:linux"
+```
+
+Os arquivos saem em `client/release/`: `Listen Together Setup <versão>.exe` (instalador), `Listen Together <versão>.exe` (portátil), `Listen-Together-<versão>-x86_64.AppImage` e `Listen-Together-<versão>-amd64.deb`.
+
+O mesmo executável serve para todos: cada pessoa configura a URL do servidor dentro do app (fica salva em `%APPDATA%\Listen Together\config.json` no Windows e `~/.config/Listen Together/config.json` no Linux — mesmo formato nos dois).
 
 ## Fluxo do usuário
 
-1. Instala ou executa o Electron.
-2. Configura a URL pública do servidor.
-3. Vincula a própria conta Spotify.
-4. O host cria a sala.
-5. Compartilha o código.
-6. Os convidados entram usando o mesmo servidor.
-7. Cada convidado ativa **Sincronizar meu Spotify com o host**.
-
-## Spotify Dashboard
-
-Configure:
-
-```text
-Redirect URI: http://127.0.0.1:43821/callback
-```
-
-Todas as contas usadas nos testes precisam estar liberadas no aplicativo do Spotify quando ele estiver em modo de desenvolvimento.
-
-Cada participante precisa:
-
-- vincular a própria conta;
-- ter um dispositivo Spotify disponível;
-- ter Premium para comandos de reprodução pela Web API.
+1. Instala o aplicativo e configura a URL do servidor (**Configurar servidor → Testar → Salvar**).
+2. Vincula a própria conta Spotify.
+3. Abre **Amigos**, copia seu código e adiciona os amigos pelo código deles.
+4. O host cria a sala e **convida os amigos online** (ou compartilha o código da sala).
+5. Cada convidado ativa **Sincronizar meu Spotify com o host**.
 
 ## Produção e segurança
 
-Antes de abrir o serviço ao público:
-
-- use domínio com HTTPS;
-- não exponha Client Secret no Electron;
-- limite `ALLOWED_ORIGINS` quando possível;
-- coloque autenticação e limites por IP no backend;
-- use Redis ao executar múltiplas réplicas;
-- adicione PostgreSQL caso queira usuários, histórico e persistência de salas;
-- valide as políticas do Spotify antes de monetizar.
+- O tráfego é HTTP em rede local. Para expor na internet, adicione HTTPS (proxy reverso) e restrinja `ALLOWED_ORIGINS`.
+- Não exponha Client Secret no Electron (o fluxo PKCE não usa secret).
+- Para múltiplas réplicas seriam necessários Redis + adapter do Socket.IO.
 
 ## Comandos úteis
 
 ```bash
-# Verificar sintaxe e build
-npm run check
-
-# Servidor em desenvolvimento
-npm run dev:server
-
-# Electron em desenvolvimento
-npm run dev:client
-
-# Build do frontend
-npm run build:client
-
-# Build dos instaladores Linux
-cd client && npm run build:linux
+npm run check          # sintaxe do servidor + build do cliente
+npm run dev:server     # servidor em desenvolvimento
+npm run dev:client     # Electron em desenvolvimento
+npm run build:win      # instalador + portátil Windows
+npm run build:linux    # AppImage + deb Linux
 ```

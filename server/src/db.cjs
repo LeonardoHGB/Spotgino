@@ -1,0 +1,232 @@
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const Database = require("better-sqlite3");
+
+// Alfabeto sem caracteres ambíguos (0/O, 1/I/L) para o código de amigo.
+const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
+function generateCode(length = 8) {
+  const bytes = crypto.randomBytes(length);
+  let out = "";
+  for (let i = 0; i < length; i += 1) {
+    out += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
+  }
+  return out;
+}
+
+function hashToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+let db = null;
+
+function init(dbFile) {
+  const resolved = path.resolve(dbFile);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+
+  db = new Database(resolved);
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS accounts (
+      user_id      TEXT PRIMARY KEY,
+      token_hash   TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      created_at   INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS friendships (
+      owner_id   TEXT NOT NULL,
+      friend_id  TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (owner_id, friend_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS friend_requests (
+      from_id    TEXT NOT NULL,
+      to_id      TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (from_id, to_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_friendships_owner ON friendships(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_requests_to ON friend_requests(to_id);
+    CREATE INDEX IF NOT EXISTS idx_requests_from ON friend_requests(from_id);
+  `);
+
+  return db;
+}
+
+function requireDb() {
+  if (!db) throw new Error("Banco não inicializado. Chame init() antes.");
+  return db;
+}
+
+// --- Contas -------------------------------------------------------------
+
+function createAccount(displayName) {
+  const database = requireDb();
+  const name = String(displayName || "").trim().slice(0, 60) || "Usuário";
+  const token = crypto.randomBytes(24).toString("hex");
+  const tokenHash = hashToken(token);
+
+  let userId = generateCode();
+  const exists = database.prepare("SELECT 1 FROM accounts WHERE user_id = ?");
+  while (exists.get(userId)) userId = generateCode();
+
+  database
+    .prepare(
+      "INSERT INTO accounts (user_id, token_hash, display_name, created_at) VALUES (?, ?, ?, ?)"
+    )
+    .run(userId, tokenHash, name, Date.now());
+
+  return { userId, token, displayName: name };
+}
+
+function verifyAccount(userId, token) {
+  if (!userId || !token) return null;
+  const account = requireDb()
+    .prepare("SELECT user_id, token_hash, display_name FROM accounts WHERE user_id = ?")
+    .get(String(userId).toUpperCase());
+  if (!account) return null;
+
+  const provided = Buffer.from(hashToken(token));
+  const stored = Buffer.from(account.token_hash);
+  if (provided.length !== stored.length || !crypto.timingSafeEqual(provided, stored)) {
+    return null;
+  }
+
+  return { userId: account.user_id, displayName: account.display_name };
+}
+
+function getAccount(userId) {
+  if (!userId) return null;
+  const account = requireDb()
+    .prepare("SELECT user_id, display_name FROM accounts WHERE user_id = ?")
+    .get(String(userId).toUpperCase());
+  return account ? { userId: account.user_id, displayName: account.display_name } : null;
+}
+
+function updateDisplayName(userId, displayName) {
+  const name = String(displayName || "").trim().slice(0, 60) || "Usuário";
+  requireDb()
+    .prepare("UPDATE accounts SET display_name = ? WHERE user_id = ?")
+    .run(name, userId);
+  return name;
+}
+
+// --- Amizades -----------------------------------------------------------
+
+function areFriends(a, b) {
+  return Boolean(
+    requireDb()
+      .prepare("SELECT 1 FROM friendships WHERE owner_id = ? AND friend_id = ?")
+      .get(a, b)
+  );
+}
+
+function hasRequest(fromId, toId) {
+  return Boolean(
+    requireDb()
+      .prepare("SELECT 1 FROM friend_requests WHERE from_id = ? AND to_id = ?")
+      .get(fromId, toId)
+  );
+}
+
+function createRequest(fromId, toId) {
+  requireDb()
+    .prepare(
+      "INSERT OR IGNORE INTO friend_requests (from_id, to_id, created_at) VALUES (?, ?, ?)"
+    )
+    .run(fromId, toId, Date.now());
+}
+
+function deleteRequest(fromId, toId) {
+  requireDb()
+    .prepare("DELETE FROM friend_requests WHERE from_id = ? AND to_id = ?")
+    .run(fromId, toId);
+}
+
+function acceptRequest(fromId, toId) {
+  const database = requireDb();
+  const run = database.transaction((from, to) => {
+    const now = Date.now();
+    database
+      .prepare("DELETE FROM friend_requests WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)")
+      .run(from, to, to, from);
+    const insert = database.prepare(
+      "INSERT OR IGNORE INTO friendships (owner_id, friend_id, created_at) VALUES (?, ?, ?)"
+    );
+    insert.run(from, to, now);
+    insert.run(to, from, now);
+  });
+  run(fromId, toId);
+}
+
+function removeFriendship(a, b) {
+  const database = requireDb();
+  const run = database.transaction(() => {
+    database
+      .prepare("DELETE FROM friendships WHERE (owner_id = ? AND friend_id = ?) OR (owner_id = ? AND friend_id = ?)")
+      .run(a, b, b, a);
+    database
+      .prepare("DELETE FROM friend_requests WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)")
+      .run(a, b, b, a);
+  });
+  run();
+}
+
+function listFriends(userId) {
+  return requireDb()
+    .prepare(
+      `SELECT a.user_id AS userId, a.display_name AS displayName
+       FROM friendships f
+       JOIN accounts a ON a.user_id = f.friend_id
+       WHERE f.owner_id = ?
+       ORDER BY a.display_name COLLATE NOCASE`
+    )
+    .all(userId);
+}
+
+function listIncomingRequests(userId) {
+  return requireDb()
+    .prepare(
+      `SELECT a.user_id AS userId, a.display_name AS displayName, r.created_at AS createdAt
+       FROM friend_requests r
+       JOIN accounts a ON a.user_id = r.from_id
+       WHERE r.to_id = ?
+       ORDER BY r.created_at DESC`
+    )
+    .all(userId);
+}
+
+function listOutgoingRequests(userId) {
+  return requireDb()
+    .prepare(
+      `SELECT a.user_id AS userId, a.display_name AS displayName, r.created_at AS createdAt
+       FROM friend_requests r
+       JOIN accounts a ON a.user_id = r.to_id
+       WHERE r.from_id = ?
+       ORDER BY r.created_at DESC`
+    )
+    .all(userId);
+}
+
+module.exports = {
+  init,
+  createAccount,
+  verifyAccount,
+  getAccount,
+  updateDisplayName,
+  areFriends,
+  hasRequest,
+  createRequest,
+  deleteRequest,
+  acceptRequest,
+  removeFriendship,
+  listFriends,
+  listIncomingRequests,
+  listOutgoingRequests
+};

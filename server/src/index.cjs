@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
+const db = require("./db.cjs");
 
 const PORT = Number(process.env.PORT || 3333);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -47,7 +48,75 @@ const io = new Server(server, {
   maxHttpBufferSize: 100_000
 });
 
+const DB_FILE = process.env.DB_FILE || "./data/listen-together.db";
+db.init(DB_FILE);
+
 const rooms = new Map();
+
+// Presença de contas autenticadas: userId -> Set<socketId>
+const presence = new Map();
+
+function isOnline(userId) {
+  const set = presence.get(userId);
+  return Boolean(set && set.size > 0);
+}
+
+function emitToUser(userId, event, payload) {
+  const set = presence.get(userId);
+  if (!set) return;
+  for (const socketId of set) io.to(socketId).emit(event, payload);
+}
+
+function friendState(userId) {
+  return {
+    self: db.getAccount(userId),
+    friends: db
+      .listFriends(userId)
+      .map((friend) => ({ ...friend, online: isOnline(friend.userId) })),
+    incoming: db.listIncomingRequests(userId),
+    outgoing: db.listOutgoingRequests(userId)
+  };
+}
+
+function pushFriendState(userId) {
+  emitToUser(userId, "friend:state", friendState(userId));
+}
+
+function setPresence(userId, socketId, online) {
+  if (online) {
+    if (!presence.has(userId)) presence.set(userId, new Set());
+    presence.get(userId).add(socketId);
+    return;
+  }
+  const set = presence.get(userId);
+  if (!set) return;
+  set.delete(socketId);
+  if (set.size === 0) presence.delete(userId);
+}
+
+function notifyFriendsPresence(userId, online) {
+  for (const friend of db.listFriends(userId)) {
+    if (isOnline(friend.userId)) {
+      emitToUser(friend.userId, "friend:presence", { userId, online });
+    }
+  }
+}
+
+function authenticate(socket, account) {
+  socket.data.userId = account.userId;
+  const wasOnline = isOnline(account.userId);
+  setPresence(account.userId, socket.id, true);
+  if (!wasOnline) notifyFriendsPresence(account.userId, true);
+}
+
+function requireAuth(socket, callback) {
+  const userId = socket.data.userId;
+  if (!userId) {
+    callback?.({ ok: false, message: "Faça login na sua conta primeiro." });
+    return null;
+  }
+  return userId;
+}
 
 const demoTracks = [
   {
@@ -386,7 +455,172 @@ io.on("connection", (socket) => {
     emitRoom(room);
   });
 
+  // --- Conta ------------------------------------------------------------
+
+  socket.on("account:register", ({ displayName } = {}, callback) => {
+    try {
+      const account = db.createAccount(displayName);
+      authenticate(socket, account);
+      callback?.({
+        ok: true,
+        account: {
+          userId: account.userId,
+          token: account.token,
+          displayName: account.displayName
+        },
+        state: friendState(account.userId)
+      });
+    } catch (error) {
+      console.error("Falha ao registrar conta:", error);
+      callback?.({ ok: false, message: "Não foi possível criar a conta." });
+    }
+  });
+
+  socket.on("account:login", ({ userId, token } = {}, callback) => {
+    const account = db.verifyAccount(userId, token);
+    if (!account) {
+      callback?.({ ok: false, message: "Credenciais inválidas." });
+      return;
+    }
+    authenticate(socket, account);
+    callback?.({
+      ok: true,
+      account: { userId: account.userId, displayName: account.displayName },
+      state: friendState(account.userId)
+    });
+  });
+
+  socket.on("account:update", ({ displayName } = {}, callback) => {
+    const userId = requireAuth(socket, callback);
+    if (!userId) return;
+    const name = db.updateDisplayName(userId, displayName);
+    callback?.({ ok: true, displayName: name });
+    for (const friend of db.listFriends(userId)) {
+      if (isOnline(friend.userId)) pushFriendState(friend.userId);
+    }
+  });
+
+  // --- Amigos -----------------------------------------------------------
+
+  socket.on("friend:request", ({ code } = {}, callback) => {
+    const userId = requireAuth(socket, callback);
+    if (!userId) return;
+
+    const target = String(code || "").trim().toUpperCase();
+    if (!target) {
+      callback?.({ ok: false, message: "Informe o código do amigo." });
+      return;
+    }
+    if (target === userId) {
+      callback?.({ ok: false, message: "Esse é o seu próprio código." });
+      return;
+    }
+    if (!db.getAccount(target)) {
+      callback?.({ ok: false, message: "Código não encontrado." });
+      return;
+    }
+    if (db.areFriends(userId, target)) {
+      callback?.({ ok: false, message: "Vocês já são amigos." });
+      return;
+    }
+
+    // Se o alvo já havia te enviado um pedido, aceita automaticamente.
+    if (db.hasRequest(target, userId)) {
+      db.acceptRequest(target, userId);
+      callback?.({ ok: true, message: "Agora vocês são amigos." });
+    } else {
+      db.createRequest(userId, target);
+      callback?.({ ok: true, message: "Pedido enviado." });
+    }
+
+    pushFriendState(userId);
+    if (isOnline(target)) pushFriendState(target);
+  });
+
+  socket.on("friend:accept", ({ userId: fromId } = {}, callback) => {
+    const userId = requireAuth(socket, callback);
+    if (!userId) return;
+
+    const from = String(fromId || "").trim().toUpperCase();
+    if (!db.hasRequest(from, userId)) {
+      callback?.({ ok: false, message: "Pedido não encontrado." });
+      return;
+    }
+    db.acceptRequest(from, userId);
+    callback?.({ ok: true });
+    pushFriendState(userId);
+    if (isOnline(from)) pushFriendState(from);
+  });
+
+  socket.on("friend:decline", ({ userId: otherId } = {}, callback) => {
+    const userId = requireAuth(socket, callback);
+    if (!userId) return;
+
+    const other = String(otherId || "").trim().toUpperCase();
+    db.deleteRequest(other, userId); // recusa pedido recebido
+    db.deleteRequest(userId, other); // ou cancela pedido enviado
+    callback?.({ ok: true });
+    pushFriendState(userId);
+    if (isOnline(other)) pushFriendState(other);
+  });
+
+  socket.on("friend:remove", ({ userId: friendId } = {}, callback) => {
+    const userId = requireAuth(socket, callback);
+    if (!userId) return;
+
+    const other = String(friendId || "").trim().toUpperCase();
+    db.removeFriendship(userId, other);
+    callback?.({ ok: true });
+    pushFriendState(userId);
+    if (isOnline(other)) pushFriendState(other);
+  });
+
+  socket.on("friend:list", (_payload, callback) => {
+    const userId = requireAuth(socket, callback);
+    if (!userId) return;
+    callback?.({ ok: true, state: friendState(userId) });
+  });
+
+  // --- Convites ---------------------------------------------------------
+
+  socket.on("invite:send", ({ userId: toId, code } = {}, callback) => {
+    const userId = requireAuth(socket, callback);
+    if (!userId) return;
+
+    const target = String(toId || "").trim().toUpperCase();
+    const roomCodeValue = String(code || socket.data.roomCode || "")
+      .trim()
+      .toUpperCase();
+
+    if (!roomCodeValue || !rooms.has(roomCodeValue)) {
+      callback?.({ ok: false, message: "Você precisa estar em uma sala válida." });
+      return;
+    }
+    if (!db.areFriends(userId, target)) {
+      callback?.({ ok: false, message: "Vocês não são amigos." });
+      return;
+    }
+    if (!isOnline(target)) {
+      callback?.({ ok: false, message: "Seu amigo está offline." });
+      return;
+    }
+
+    const me = db.getAccount(userId);
+    emitToUser(target, "invite:received", {
+      fromId: userId,
+      fromName: me?.displayName || "Amigo",
+      code: roomCodeValue
+    });
+    callback?.({ ok: true, message: "Convite enviado." });
+  });
+
   socket.on("disconnect", () => {
+    const userId = socket.data.userId;
+    if (userId) {
+      setPresence(userId, socket.id, false);
+      if (!isOnline(userId)) notifyFriendsPresence(userId, false);
+    }
+
     const room = rooms.get(socket.data.roomCode);
     if (!room) return;
 

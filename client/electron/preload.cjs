@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getAppConfig: () => ipcRenderer.invoke("app-config:get"),
   saveServerUrl: (serverUrl) => ipcRenderer.invoke("app-config:save-server", serverUrl),
   testServerUrl: (serverUrl) => ipcRenderer.invoke("app-config:test-server", serverUrl),
+  saveAccount: (account) => ipcRenderer.invoke("app-account:save", account),
+  clearAccount: () => ipcRenderer.invoke("app-account:clear"),
   platform: process.platform,
   onSpotifyCallback: (callback) => {
     const listener = (_event, payload) => callback(payload);

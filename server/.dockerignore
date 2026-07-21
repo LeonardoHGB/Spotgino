@@ -4,3 +4,8 @@ npm-debug.log
 .env
 Dockerfile*
 README.md
+data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
