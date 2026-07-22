@@ -42,6 +42,25 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   object-fit: cover;
   background: #000;
   flex-shrink: 0;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+.brand .logo:hover {
+  transform: scale(1.06);
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.18);
+}
+/* Easter egg: duplo clique gira o logo (duas voltas com um pop de escala). */
+.brand .logo.spin {
+  animation: logo-spin 0.9s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes logo-spin {
+  0% { transform: rotate(0deg) scale(1); }
+  45% { transform: rotate(300deg) scale(1.18); }
+  100% { transform: rotate(720deg) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand .logo.spin { animation: none; }
 }
 .brand strong, .brand span { display: block; }
 .brand strong { font-size: 15px; }
@@ -143,6 +162,8 @@ input:focus, select:focus { border-color: #22c55e; box-shadow: 0 0 0 3px rgba(34
   font-weight: 900;
 }
 .avatar.small { width: 30px; height: 30px; font-size: 12px; flex: 0 0 auto; }
+/* Quando o avatar é a foto real (Spotify), recorta redondo sem distorcer. */
+img.avatar { object-fit: cover; flex: 0 0 auto; }
 .member strong, .member span { display: block; }
 .member strong { font-size: 13px; }
 .member span { color: #71717a; font-size: 11px; margin-top: 2px; }
@@ -167,6 +188,8 @@ input:focus, select:focus { border-color: #22c55e; box-shadow: 0 0 0 3px rgba(34
   color: #052e16;
   font-weight: 800;
 }
+.spotify-account { display: flex; align-items: center; gap: 10px; margin: 8px 0 12px; }
+.spotify-account .spotify-user { margin: 0; }
 .spotify-user { margin: 8px 0 12px; font-size: 12px; color: #d4d4d8; }
 .small-label { font-size: 11px; color: #a1a1aa; }
 .spotify-card select { padding: 9px; font-size: 12px; }

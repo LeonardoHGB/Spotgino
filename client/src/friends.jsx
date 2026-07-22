@@ -4,8 +4,15 @@ import { getSocket } from "./socket";
 // Hook que cuida da conta persistente, da lista de amigos, pedidos e convites.
 // Toda a identidade vive no servidor (SQLite); o token fica salvo na config
 // do Electron (idêntica em Windows e Linux).
-export function useFriends({ socketConnected, displayName, onJoinRoom, notify }) {
-  const [account, setAccount] = useState(null); // { userId, displayName }
+export function useFriends({
+  socketConnected,
+  displayName,
+  spotifyConnected,
+  getSpotifyToken,
+  onJoinRoom,
+  notify
+}) {
+  const [account, setAccount] = useState(null); // { userId, displayName, avatarUrl }
   const [friends, setFriends] = useState([]);
   const [incoming, setIncoming] = useState([]);
   const [outgoing, setOutgoing] = useState([]);
@@ -13,11 +20,16 @@ export function useFriends({ socketConnected, displayName, onJoinRoom, notify })
 
   const credsRef = useRef(null); // { userId, token }
   const displayNameRef = useRef(displayName);
+  const getSpotifyTokenRef = useRef(getSpotifyToken);
   const loadedRef = useRef(false);
 
   useEffect(() => {
     displayNameRef.current = displayName;
   }, [displayName]);
+
+  useEffect(() => {
+    getSpotifyTokenRef.current = getSpotifyToken;
+  }, [getSpotifyToken]);
 
   // Carrega as credenciais salvas uma única vez.
   useEffect(() => {
@@ -66,6 +78,12 @@ export function useFriends({ socketConnected, displayName, onJoinRoom, notify })
     socket.on("friend:presence", onPresence);
     socket.on("invite:received", onInvite);
 
+    const persistAndApply = async (res) => {
+      credsRef.current = { userId: res.account.userId, token: res.account.token };
+      await window.electronAPI?.saveAccount?.(res.account);
+      applyState(res.state);
+    };
+
     // socket.timeout(): o callback vira (err, res) — err quando o servidor não
     // responde (ex.: versão antiga sem os handlers de amigos).
     const register = () =>
@@ -77,15 +95,11 @@ export function useFriends({ socketConnected, displayName, onJoinRoom, notify })
             notify?.("Servidor sem suporte a amigos. Atualize o servidor.");
             return;
           }
-          if (res?.ok) {
-            credsRef.current = { userId: res.account.userId, token: res.account.token };
-            await window.electronAPI?.saveAccount?.(res.account);
-            applyState(res.state);
-          }
+          if (res?.ok) await persistAndApply(res);
         }
       );
 
-    const authenticate = () => {
+    const loginWithStored = () => {
       const stored = credsRef.current;
       if (stored?.userId && stored?.token) {
         socket.timeout(8000).emit("account:login", stored, (err, res) => {
@@ -99,6 +113,30 @@ export function useFriends({ socketConnected, displayName, onJoinRoom, notify })
       } else {
         register();
       }
+    };
+
+    const authenticate = async () => {
+      // Identidade via Spotify é a fonte de verdade: o mesmo usuário sempre
+      // recai na mesma conta (código de amigo e amizades preservados).
+      if (spotifyConnected && getSpotifyTokenRef.current) {
+        try {
+          const spToken = await getSpotifyTokenRef.current();
+          if (spToken) {
+            socket.timeout(8000).emit(
+              "account:spotify",
+              { token: spToken },
+              async (err, res) => {
+                if (!err && res?.ok) await persistAndApply(res);
+                else loginWithStored();
+              }
+            );
+            return;
+          }
+        } catch {
+          // Sem token válido do Spotify: cai pro fluxo padrão.
+        }
+      }
+      loginWithStored();
     };
 
     // Espera as credenciais carregarem da config antes de autenticar.
@@ -118,7 +156,7 @@ export function useFriends({ socketConnected, displayName, onJoinRoom, notify })
       socket.off("friend:presence", onPresence);
       socket.off("invite:received", onInvite);
     };
-  }, [socketConnected, applyState]);
+  }, [socketConnected, spotifyConnected, applyState]);
 
   const addFriend = useCallback(
     (code) =>
@@ -198,7 +236,17 @@ export function useFriends({ socketConnected, displayName, onJoinRoom, notify })
   };
 }
 
-function Avatar({ name }) {
+function Avatar({ name, url }) {
+  if (url) {
+    return (
+      <img
+        className="avatar"
+        src={url}
+        alt={name || ""}
+        referrerPolicy="no-referrer"
+      />
+    );
+  }
   return <div className="avatar">{(name || "?").slice(0, 1).toUpperCase()}</div>;
 }
 
@@ -286,7 +334,7 @@ export function FriendsPanel({
             </div>
             {incoming.map((person) => (
               <div className="friend-row" key={person.userId}>
-                <Avatar name={person.displayName} />
+                <Avatar name={person.displayName} url={person.avatarUrl} />
                 <div className="friend-info">
                   <strong>{person.displayName}</strong>
                   <span>{person.userId}</span>
@@ -315,7 +363,7 @@ export function FriendsPanel({
             friends.map((person) => (
               <div className="friend-row" key={person.userId}>
                 <div className="avatar-wrap">
-                  <Avatar name={person.displayName} />
+                  <Avatar name={person.displayName} url={person.avatarUrl} />
                   <span className={`presence-dot ${person.online ? "online" : ""}`} />
                 </div>
                 <div className="friend-info">
@@ -354,7 +402,7 @@ export function FriendsPanel({
             </div>
             {outgoing.map((person) => (
               <div className="friend-row" key={person.userId}>
-                <Avatar name={person.displayName} />
+                <Avatar name={person.displayName} url={person.avatarUrl} />
                 <div className="friend-info">
                   <strong>{person.displayName}</strong>
                   <span>Aguardando resposta</span>

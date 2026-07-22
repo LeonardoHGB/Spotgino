@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   configureSocket,
   disconnectSocket,
@@ -11,12 +11,29 @@ import {
   createSpotifyAuthorizationUrl,
   exchangeCode,
   getOAuthState,
+  getValidAccessToken,
   hasSpotifySession,
   spotifyApi
 } from "./spotify";
 import { useFriends, FriendsPanel, InviteToasts } from "./friends";
 import MiniPlayer, { MINI_SIZE, MINI_CHAT_SIZE } from "./miniplayer";
 import logo from "./assets/logo.png";
+
+// Logo da marca com easter egg: duplo clique gira o logo. A classe `spin` é
+// removida no fim da animação para poder disparar de novo.
+function BrandLogo({ className = "logo" }) {
+  const [spinning, setSpinning] = useState(false);
+  return (
+    <img
+      className={`${className}${spinning ? " spin" : ""}`}
+      src={logo}
+      alt="Spotgino"
+      draggable={false}
+      onDoubleClick={() => setSpinning(true)}
+      onAnimationEnd={() => setSpinning(false)}
+    />
+  );
+}
 
 const HOST_POLL_INTERVAL = 2500;
 const GUEST_DRIFT_INTERVAL = 15000;
@@ -75,6 +92,12 @@ function playbackFromTrack(track, options = {}) {
     deviceName: options.deviceName || "Spotify",
     source: options.source || "spotify"
   };
+}
+
+// Dispositivo de reprodução padrão: preferimos o computador (Spotify Desktop),
+// caindo para o dispositivo ativo ou o primeiro disponível.
+function pickComputerDevice(devices) {
+  return devices.find((device) => device.type === "Computer") || null;
 }
 
 function callbackEmit(event, payload = {}) {
@@ -180,7 +203,7 @@ export default function App() {
   const [miniMode, setMiniMode] = useState(false);
   const [miniChatOpen, setMiniChatOpen] = useState(false);
   const [unreadMessages, setUnreadMessages] = useState(0);
-  const [appVersion, setAppVersion] = useState("3.0.0");
+  const [appVersion, setAppVersion] = useState("3.1.0");
   const [updateStatus, setUpdateStatus] = useState(null); // null | "checking" | {version,url}
   // undefined = ainda sem snapshot da sala; null = snapshot visto, sala vazia.
   const seenMessagesRef = useRef(undefined);
@@ -230,12 +253,34 @@ export default function App() {
   // do mount. Chamando via ref, sempre usamos a versão do render corrente.
   nextTrackRef.current = nextTrack;
 
+  // Fornece o access token do Spotify para o login de conta no servidor.
+  // Retorna null quando não há sessão válida (o servidor cai no fluxo padrão).
+  const getSpotifyToken = useCallback(async () => {
+    try {
+      return await getValidAccessToken();
+    } catch {
+      return null;
+    }
+  }, []);
+
   const friendsHub = useFriends({
     socketConnected,
     displayName,
+    spotifyConnected,
+    getSpotifyToken,
     onJoinRoom: (code) => joinRoomByCode(code),
     notify: setNotice
   });
+
+  // A identidade (nome) passa a vir da conta logada — normalmente o Spotify.
+  // Sincroniza o displayName usado ao criar/entrar em salas.
+  const accountName = friendsHub.account?.displayName;
+  useEffect(() => {
+    if (accountName && accountName !== displayName) {
+      setDisplayName(accountName);
+      localStorage.setItem("display_name", accountName);
+    }
+  }, [accountName]);
 
   // Redimensiona a janela do Electron conforme o modo mini/chat (Win e Linux).
   // Dep booleana: `room` muda de identidade a cada room:state e re-invocaria
@@ -665,7 +710,11 @@ export default function App() {
       setSpotifyDeviceId((current) =>
         current && devices.some((device) => device.id === current)
           ? current
-          : playback?.deviceId || activeDevice?.id || devices[0]?.id || ""
+          : pickComputerDevice(devices)?.id ||
+            playback?.deviceId ||
+            activeDevice?.id ||
+            devices[0]?.id ||
+            ""
       );
     } catch (error) {
       setSpotifyError(error.message);
@@ -687,7 +736,7 @@ export default function App() {
       setSpotifyDeviceId((current) =>
         devices.some((device) => device.id === current)
           ? current
-          : active?.id || devices[0]?.id || ""
+          : pickComputerDevice(devices)?.id || active?.id || devices[0]?.id || ""
       );
     } catch (error) {
       setSpotifyError(error.message);
@@ -708,6 +757,7 @@ export default function App() {
     const cached = spotifyDeviceIdRef.current;
     const selected =
       (cached && devices.find((device) => device.id === cached)) ||
+      pickComputerDevice(devices) ||
       devices.find((device) => device.is_active) ||
       devices[0];
 
@@ -1205,7 +1255,7 @@ export default function App() {
       <main className="landing">
         <section className="hero-card loading-card">
           <div className="brand">
-            <img className="logo" src={logo} alt="Spotgino" />
+            <BrandLogo />
             <div>
               <strong>Spotgino</strong>
               <span>Carregando configuração...</span>
@@ -1222,7 +1272,7 @@ export default function App() {
       <main className="landing">
         <section className="hero-card">
           <div className="brand">
-            <img className="logo" src={logo} alt="Spotgino" />
+            <BrandLogo />
             <div>
               <strong>Spotgino</strong>
               <span>Electron + Spotify Connect</span>
@@ -1379,7 +1429,7 @@ export default function App() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand compact">
-          <img className="logo" src={logo} alt="Spotgino" />
+          <BrandLogo />
           <div>
             <strong>Spotgino</strong>
             <span>Sala {room.code}</span>
@@ -1414,9 +1464,18 @@ export default function App() {
           <div className="member-list">
             {room.members.map((member) => (
               <div className="member" key={member.id}>
-                <div className="avatar">
-                  {member.name.slice(0, 1).toUpperCase()}
-                </div>
+                {member.avatar ? (
+                  <img
+                    className="avatar"
+                    src={member.avatar}
+                    alt={member.name}
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <div className="avatar">
+                    {member.name.slice(0, 1).toUpperCase()}
+                  </div>
+                )}
                 <div>
                   <strong>{member.name}</strong>
                   <span>{member.isHost ? "Host da sala" : "Ouvindo junto"}</span>
@@ -1441,9 +1500,22 @@ export default function App() {
             </button>
           ) : (
             <>
-              <p className="spotify-user">
-                {spotifyProfile?.display_name || spotifyProfile?.id || "Conta Spotify"}
-              </p>
+              <div className="spotify-account">
+                {(friendsHub.account?.avatarUrl || spotifyProfile?.images?.[0]?.url) && (
+                  <img
+                    className="avatar"
+                    src={friendsHub.account?.avatarUrl || spotifyProfile?.images?.[0]?.url}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                  />
+                )}
+                <p className="spotify-user">
+                  {friendsHub.account?.displayName ||
+                    spotifyProfile?.display_name ||
+                    spotifyProfile?.id ||
+                    "Conta Spotify"}
+                </p>
+              </div>
 
               <label className="small-label">
                 Dispositivo de reprodução

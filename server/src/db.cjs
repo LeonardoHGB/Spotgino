@@ -56,6 +56,20 @@ function init(dbFile) {
     CREATE INDEX IF NOT EXISTS idx_requests_from ON friend_requests(from_id);
   `);
 
+  // Migração: identidade vinda do Spotify (contas antigas ficam com NULL).
+  const columns = db.prepare("PRAGMA table_info(accounts)").all().map((c) => c.name);
+  if (!columns.includes("spotify_id")) {
+    db.exec("ALTER TABLE accounts ADD COLUMN spotify_id TEXT");
+  }
+  if (!columns.includes("avatar_url")) {
+    db.exec("ALTER TABLE accounts ADD COLUMN avatar_url TEXT");
+  }
+  // NULLs são distintos no índice UNIQUE do SQLite, então contas anônimas
+  // (spotify_id NULL) convivem; só bloqueia dois spotify_id iguais.
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_spotify ON accounts(spotify_id)"
+  );
+
   return db;
 }
 
@@ -85,6 +99,45 @@ function createAccount(displayName) {
   return { userId, token, displayName: name };
 }
 
+// Cria ou atualiza a conta ligada a um usuário do Spotify. A identidade
+// (spotify_id) é a chave estável: o mesmo usuário sempre recai na mesma conta,
+// preservando código de amigo e amizades. Emite um novo token de sessão.
+function upsertSpotifyAccount({ spotifyId, displayName, avatarUrl }) {
+  const database = requireDb();
+  const id = String(spotifyId || "").trim();
+  if (!id) throw new Error("spotifyId ausente.");
+
+  const name = String(displayName || "").trim().slice(0, 60) || "Usuário";
+  const avatar = typeof avatarUrl === "string" ? avatarUrl.slice(0, 1000) : null;
+  const token = crypto.randomBytes(24).toString("hex");
+  const tokenHash = hashToken(token);
+
+  const existing = database
+    .prepare("SELECT user_id FROM accounts WHERE spotify_id = ?")
+    .get(id);
+
+  if (existing) {
+    database
+      .prepare(
+        "UPDATE accounts SET token_hash = ?, display_name = ?, avatar_url = ? WHERE user_id = ?"
+      )
+      .run(tokenHash, name, avatar, existing.user_id);
+    return { userId: existing.user_id, token, displayName: name, avatarUrl: avatar };
+  }
+
+  let userId = generateCode();
+  const exists = database.prepare("SELECT 1 FROM accounts WHERE user_id = ?");
+  while (exists.get(userId)) userId = generateCode();
+
+  database
+    .prepare(
+      "INSERT INTO accounts (user_id, token_hash, display_name, created_at, spotify_id, avatar_url) VALUES (?, ?, ?, ?, ?, ?)"
+    )
+    .run(userId, tokenHash, name, Date.now(), id, avatar);
+
+  return { userId, token, displayName: name, avatarUrl: avatar };
+}
+
 function verifyAccount(userId, token) {
   if (!userId || !token) return null;
   const account = requireDb()
@@ -104,9 +157,15 @@ function verifyAccount(userId, token) {
 function getAccount(userId) {
   if (!userId) return null;
   const account = requireDb()
-    .prepare("SELECT user_id, display_name FROM accounts WHERE user_id = ?")
+    .prepare("SELECT user_id, display_name, avatar_url FROM accounts WHERE user_id = ?")
     .get(String(userId).toUpperCase());
-  return account ? { userId: account.user_id, displayName: account.display_name } : null;
+  return account
+    ? {
+        userId: account.user_id,
+        displayName: account.display_name,
+        avatarUrl: account.avatar_url || null
+      }
+    : null;
 }
 
 function updateDisplayName(userId, displayName) {
@@ -181,7 +240,7 @@ function removeFriendship(a, b) {
 function listFriends(userId) {
   return requireDb()
     .prepare(
-      `SELECT a.user_id AS userId, a.display_name AS displayName
+      `SELECT a.user_id AS userId, a.display_name AS displayName, a.avatar_url AS avatarUrl
        FROM friendships f
        JOIN accounts a ON a.user_id = f.friend_id
        WHERE f.owner_id = ?
@@ -193,7 +252,7 @@ function listFriends(userId) {
 function listIncomingRequests(userId) {
   return requireDb()
     .prepare(
-      `SELECT a.user_id AS userId, a.display_name AS displayName, r.created_at AS createdAt
+      `SELECT a.user_id AS userId, a.display_name AS displayName, a.avatar_url AS avatarUrl, r.created_at AS createdAt
        FROM friend_requests r
        JOIN accounts a ON a.user_id = r.from_id
        WHERE r.to_id = ?
@@ -205,7 +264,7 @@ function listIncomingRequests(userId) {
 function listOutgoingRequests(userId) {
   return requireDb()
     .prepare(
-      `SELECT a.user_id AS userId, a.display_name AS displayName, r.created_at AS createdAt
+      `SELECT a.user_id AS userId, a.display_name AS displayName, a.avatar_url AS avatarUrl, r.created_at AS createdAt
        FROM friend_requests r
        JOIN accounts a ON a.user_id = r.to_id
        WHERE r.from_id = ?
@@ -217,6 +276,7 @@ function listOutgoingRequests(userId) {
 module.exports = {
   init,
   createAccount,
+  upsertSpotifyAccount,
   verifyAccount,
   getAccount,
   updateDisplayName,
