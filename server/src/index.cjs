@@ -118,6 +118,29 @@ function requireAuth(socket, callback) {
   return userId;
 }
 
+// Valida o access token do Spotify direto na fonte e devolve a identidade
+// canônica (id, nome, foto). Assim o cliente não consegue se passar por outro
+// usuário só mandando um spotifyId qualquer.
+async function fetchSpotifyProfile(accessToken) {
+  const token = String(accessToken || "").trim();
+  if (!token) return null;
+
+  const response = await fetch("https://api.spotify.com/v1/me", {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (!response.ok) return null;
+
+  const data = await response.json();
+  if (!data?.id) return null;
+
+  return {
+    spotifyId: String(data.id),
+    displayName: data.display_name || data.id,
+    avatarUrl: Array.isArray(data.images) && data.images[0]?.url ? data.images[0].url : null
+  };
+}
+
 const demoTracks = [
   {
     id: "demo-midnight-interface",
@@ -248,7 +271,7 @@ app.get("/health", (_request, response) => {
     rooms: rooms.size,
     connections: io.engine.clientsCount,
     uptimeSeconds: Math.floor(process.uptime()),
-    version: "3.0.0"
+    version: "3.1.0"
   });
 });
 
@@ -285,9 +308,15 @@ io.on("connection", (socket) => {
       lastActivityAt: Date.now()
     };
 
+    const hostAccount = socket.data.userId ? db.getAccount(socket.data.userId) : null;
     room.members.set(socket.id, {
       id: socket.id,
-      name: String(displayName || "Host").trim().slice(0, 60) || "Host",
+      name:
+        hostAccount?.displayName ||
+        String(displayName || "Host").trim().slice(0, 60) ||
+        "Host",
+      avatar: hostAccount?.avatarUrl || null,
+      accountId: socket.data.userId || null,
       isHost: true,
       joinedAt: Date.now()
     });
@@ -313,10 +342,15 @@ io.on("connection", (socket) => {
       return;
     }
 
+    const guestAccount = socket.data.userId ? db.getAccount(socket.data.userId) : null;
     room.members.set(socket.id, {
       id: socket.id,
       name:
-        String(displayName || "Convidado").trim().slice(0, 60) || "Convidado",
+        guestAccount?.displayName ||
+        String(displayName || "Convidado").trim().slice(0, 60) ||
+        "Convidado",
+      avatar: guestAccount?.avatarUrl || null,
+      accountId: socket.data.userId || null,
       isHost: false,
       joinedAt: Date.now()
     });
@@ -473,6 +507,32 @@ io.on("connection", (socket) => {
     } catch (error) {
       console.error("Falha ao registrar conta:", error);
       callback?.({ ok: false, message: "Não foi possível criar a conta." });
+    }
+  });
+
+  socket.on("account:spotify", async ({ token } = {}, callback) => {
+    try {
+      const profile = await fetchSpotifyProfile(token);
+      if (!profile) {
+        callback?.({ ok: false, message: "Não foi possível validar sua conta Spotify." });
+        return;
+      }
+
+      const account = db.upsertSpotifyAccount(profile);
+      authenticate(socket, account);
+      callback?.({
+        ok: true,
+        account: {
+          userId: account.userId,
+          token: account.token,
+          displayName: account.displayName,
+          avatarUrl: account.avatarUrl
+        },
+        state: friendState(account.userId)
+      });
+    } catch (error) {
+      console.error("Falha no login via Spotify:", error);
+      callback?.({ ok: false, message: "Falha ao entrar com o Spotify." });
     }
   });
 
