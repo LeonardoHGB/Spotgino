@@ -276,12 +276,21 @@ export default function App() {
   // A identidade (nome) passa a vir da conta logada — normalmente o Spotify.
   // Sincroniza o displayName usado ao criar/entrar em salas.
   const accountName = friendsHub.account?.displayName;
+  const accountId = friendsHub.account?.userId;
   useEffect(() => {
     if (accountName && accountName !== displayName) {
       setDisplayName(accountName);
       localStorage.setItem("display_name", accountName);
     }
   }, [accountName]);
+
+  // "Ouvir junto" com um amigo, sem sala. listeningTo = { userId, name } | null.
+  const [listeningTo, setListeningTo] = useState(null);
+  const [listeningTrack, setListeningTrack] = useState(null);
+  const listeningToRef = useRef(null);
+  useEffect(() => {
+    listeningToRef.current = listeningTo?.userId || null;
+  }, [listeningTo]);
 
   // Redimensiona a janela do Electron conforme o modo mini/chat (Win e Linux).
   // Dep booleana: `room` muda de identidade a cada room:state e re-invocaria
@@ -499,6 +508,56 @@ export default function App() {
     const timer = setTimeout(() => setNotice(""), 5000);
     return () => clearTimeout(timer);
   }, [notice]);
+
+  // Reporta ao servidor o que estou ouvindo, para os amigos verem e poderem
+  // ouvir junto. Roda enquanto o Spotify e a conta estiverem ativos.
+  useEffect(() => {
+    if (!spotifyConnected || !socketConnected || !accountId) return undefined;
+
+    let cancelled = false;
+    const report = async () => {
+      try {
+        const playback = await spotifyApi.currentPlayback();
+        if (!cancelled) getSocket()?.emit("presence:playback", { playback });
+      } catch {
+        // Ignora falhas pontuais do Spotify.
+      }
+    };
+
+    report();
+    const timer = setInterval(report, 20_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [spotifyConnected, socketConnected, accountId]);
+
+  // Recebe o playback de quem estou seguindo e sincroniza meu Spotify.
+  useEffect(() => {
+    if (!socketConnected) return undefined;
+    const socket = getSocket();
+    if (!socket) return undefined;
+
+    const onListenPlayback = ({ userId, playback }) => {
+      if (listeningToRef.current !== userId) return;
+      if (!playback?.track) return;
+      setListeningTrack(playback.track);
+      if (spotifyConnected) syncFollowerToRoom(playback);
+    };
+    const onListenEnded = ({ userId }) => {
+      if (listeningToRef.current !== userId) return;
+      setListeningTo(null);
+      setListeningTrack(null);
+      setNotice("A transmissão do seu amigo terminou.");
+    };
+
+    socket.on("listen:playback", onListenPlayback);
+    socket.on("listen:ended", onListenEnded);
+    return () => {
+      socket.off("listen:playback", onListenPlayback);
+      socket.off("listen:ended", onListenEnded);
+    };
+  }, [socketConnected, spotifyConnected]);
 
   useEffect(() => {
     if (!runtimeReady || !serverUrl) return undefined;
@@ -991,6 +1050,35 @@ export default function App() {
     );
   }
 
+  function listenAlong(userId, name) {
+    if (room) {
+      setNotice("Saia da sala para ouvir junto com um amigo.");
+      return;
+    }
+    if (!spotifyConnected) {
+      setNotice("Conecte o Spotify para ouvir junto.");
+      return;
+    }
+    getSocket()
+      ?.timeout(8000)
+      .emit("listen:follow", { userId }, (err, res) => {
+        if (err || !res?.ok) {
+          setNotice(res?.message || "Não foi possível ouvir junto agora.");
+          return;
+        }
+        setListeningTo({ userId, name });
+        setListeningTrack(res.playback?.track || null);
+        if (res.playback?.track) syncFollowerToRoom(res.playback);
+        setNotice(`Ouvindo junto com ${name}.`);
+      });
+  }
+
+  function stopListening() {
+    getSocket()?.emit("listen:stop", {}, () => {});
+    setListeningTo(null);
+    setListeningTrack(null);
+  }
+
   function emitHostPlayback(playback) {
     getSocket()?.emit("playback:host-sync", { playback }, (result) => {
       if (result && !result.ok) setSpotifyError(result.message);
@@ -1431,10 +1519,28 @@ export default function App() {
         onDecline={friendsHub.declineFriend}
         onRemove={friendsHub.removeFriend}
         onInvite={friendsHub.inviteFriend}
+        onListenAlong={listenAlong}
+        onStopListening={stopListening}
+        listeningTo={listeningTo?.userId}
         inRoom={false}
         roomCode={undefined}
         notify={setNotice}
       />
+      {listeningTo && (
+        <div className="listen-banner">
+          <div className="listen-banner-info">
+            <span>♪ Ouvindo junto com {listeningTo.name}</span>
+            {listeningTrack && (
+              <strong>
+                {listeningTrack.title} · {listeningTrack.artist}
+              </strong>
+            )}
+          </div>
+          <button className="mini-button danger" onClick={stopListening}>
+            Parar
+          </button>
+        </div>
+      )}
       <InviteToasts
         invites={friendsHub.invites}
         onAccept={friendsHub.acceptInvite}
@@ -1884,6 +1990,9 @@ export default function App() {
       onDecline={friendsHub.declineFriend}
       onRemove={friendsHub.removeFriend}
       onInvite={friendsHub.inviteFriend}
+      onListenAlong={listenAlong}
+      onStopListening={stopListening}
+      listeningTo={listeningTo?.userId}
       inRoom={Boolean(room)}
       roomCode={room?.code}
       notify={setNotice}

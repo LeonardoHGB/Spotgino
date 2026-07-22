@@ -320,6 +320,49 @@ img.avatar { object-fit: cover; flex: 0 0 auto; }
   line-height: 1.5;
 }
 
+/* O que o amigo está ouvindo agora, na lista de amigos. */
+.friend-now-playing {
+  color: #1DB954 !important;
+  display: block;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.friend-actions { flex-wrap: wrap; justify-content: flex-end; }
+
+/* Banner de "ouvir junto" no lobby. */
+.listen-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  width: min(520px, calc(100% - 32px));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border: 1px solid rgba(29, 185, 84, 0.5);
+  border-radius: 16px;
+  background: rgba(20, 24, 22, 0.96);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  z-index: 50;
+  animation: listen-banner-in 0.3s ease;
+}
+@keyframes listen-banner-in {
+  from { opacity: 0; transform: translate(-50%, 12px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+.listen-banner-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.listen-banner-info span { color: #1DB954; font-size: 12px; font-weight: 700; }
+.listen-banner-info strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .now-playing {
   position: relative;
   display: grid;
