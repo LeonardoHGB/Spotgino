@@ -65,7 +65,15 @@ export function useFriends({
     const onPresence = ({ userId, online }) =>
       setFriends((prev) =>
         prev.map((friend) =>
-          friend.userId === userId ? { ...friend, online } : friend
+          friend.userId === userId
+            ? { ...friend, online, nowPlaying: online ? friend.nowPlaying : null }
+            : friend
+        )
+      );
+    const onFriendPlayback = ({ userId, track }) =>
+      setFriends((prev) =>
+        prev.map((friend) =>
+          friend.userId === userId ? { ...friend, nowPlaying: track } : friend
         )
       );
     const onInvite = (invite) =>
@@ -76,6 +84,7 @@ export function useFriends({
 
     socket.on("friend:state", onState);
     socket.on("friend:presence", onPresence);
+    socket.on("friend:playback", onFriendPlayback);
     socket.on("invite:received", onInvite);
 
     const persistAndApply = async (res) => {
@@ -143,6 +152,7 @@ export function useFriends({
     return () => {
       socket.off("friend:state", onState);
       socket.off("friend:presence", onPresence);
+      socket.off("friend:playback", onFriendPlayback);
       socket.off("invite:received", onInvite);
     };
   }, [socketConnected, spotifyConnected, applyState]);
@@ -251,6 +261,9 @@ export function FriendsPanel({
   onDecline,
   onRemove,
   onInvite,
+  onListenAlong,
+  onStopListening,
+  listeningTo,
   inRoom,
   roomCode,
   notify
@@ -357,11 +370,34 @@ export function FriendsPanel({
                 </div>
                 <div className="friend-info">
                   <strong>{person.displayName}</strong>
-                  <span>{person.online ? "Online" : "Offline"}</span>
+                  {person.online && person.nowPlaying ? (
+                    <span
+                      className="friend-now-playing"
+                      title={`${person.nowPlaying.title} - ${person.nowPlaying.artist}`}
+                    >
+                      ♪ {person.nowPlaying.title}
+                    </span>
+                  ) : (
+                    <span>{person.online ? "Online" : "Offline"}</span>
+                  )}
                 </div>
                 <div className="friend-actions">
+                  {person.online &&
+                    person.nowPlaying &&
+                    (listeningTo === person.userId ? (
+                      <button className="mini-button" onClick={onStopListening}>
+                        Parar
+                      </button>
+                    ) : (
+                      <button
+                        className="mini-button accept"
+                        onClick={() => onListenAlong(person.userId, person.displayName)}
+                      >
+                        Ouvir junto
+                      </button>
+                    ))}
                   <button
-                    className="mini-button accept"
+                    className="mini-button"
                     disabled={!inRoom || !person.online}
                     title={
                       !inRoom

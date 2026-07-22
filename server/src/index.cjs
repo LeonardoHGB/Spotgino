@@ -76,6 +76,13 @@ const rooms = new Map();
 // Presença de contas autenticadas: userId -> Set<socketId>
 const presence = new Map();
 
+// O que cada usuário está ouvindo agora: userId -> { track, playback, updatedAt }
+const userPlayback = new Map();
+const NOW_PLAYING_TTL_MS = 90_000;
+
+// "Ouvir junto" sem sala: broadcasterUserId -> Set<socketId> de seguidores.
+const listeners = new Map();
+
 function isOnline(userId) {
   const set = presence.get(userId);
   return Boolean(set && set.size > 0);
@@ -87,12 +94,26 @@ function emitToUser(userId, event, payload) {
   for (const socketId of set) io.to(socketId).emit(event, payload);
 }
 
+function nowPlayingOf(userId) {
+  const entry = userPlayback.get(userId);
+  if (!entry || Date.now() - entry.updatedAt > NOW_PLAYING_TTL_MS) return null;
+  return entry.track || null;
+}
+
+function removeSocketFromListeners(socketId) {
+  for (const [uid, set] of listeners) {
+    if (set.delete(socketId) && set.size === 0) listeners.delete(uid);
+  }
+}
+
 function friendState(userId) {
   return {
     self: db.getAccount(userId),
-    friends: db
-      .listFriends(userId)
-      .map((friend) => ({ ...friend, online: isOnline(friend.userId) })),
+    friends: db.listFriends(userId).map((friend) => ({
+      ...friend,
+      online: isOnline(friend.userId),
+      nowPlaying: nowPlayingOf(friend.userId)
+    })),
     incoming: db.listIncomingRequests(userId),
     outgoing: db.listOutgoingRequests(userId)
   };
@@ -697,11 +718,80 @@ io.on("connection", (socket) => {
     callback?.({ ok: true, message: "Convite enviado." });
   });
 
+  // --- Ouvir junto (sem sala) -------------------------------------------
+
+  // Cada cliente reporta o que está tocando; o servidor guarda, avisa os amigos
+  // online e repassa para quem estiver "ouvindo junto" com ele.
+  socket.on("presence:playback", ({ playback } = {}) => {
+    const userId = socket.data.userId;
+    if (!userId) return;
+
+    const track = playback?.track ? cleanTrack(playback.track) : null;
+    userPlayback.set(userId, { track, playback: track ? playback : null, updatedAt: Date.now() });
+
+    for (const friend of db.listFriends(userId)) {
+      if (isOnline(friend.userId)) {
+        emitToUser(friend.userId, "friend:playback", { userId, track });
+      }
+    }
+
+    const set = listeners.get(userId);
+    if (set && track) {
+      for (const socketId of set) io.to(socketId).emit("listen:playback", { userId, playback });
+    }
+  });
+
+  socket.on("listen:follow", ({ userId: targetId } = {}, callback) => {
+    const me = requireAuth(socket, callback);
+    if (!me) return;
+
+    const target = String(targetId || "").trim().toUpperCase();
+    if (!db.areFriends(me, target)) {
+      callback?.({ ok: false, message: "Vocês não são amigos." });
+      return;
+    }
+    if (!isOnline(target)) {
+      callback?.({ ok: false, message: "Seu amigo está offline." });
+      return;
+    }
+
+    removeSocketFromListeners(socket.id); // só segue um amigo por vez
+    if (!listeners.has(target)) listeners.set(target, new Set());
+    listeners.get(target).add(socket.id);
+    socket.data.followingUserId = target;
+
+    const entry = userPlayback.get(target);
+    callback?.({
+      ok: true,
+      host: db.getAccount(target),
+      playback: entry?.playback || null
+    });
+  });
+
+  socket.on("listen:stop", (_payload, callback) => {
+    removeSocketFromListeners(socket.id);
+    socket.data.followingUserId = null;
+    callback?.({ ok: true });
+  });
+
   socket.on("disconnect", () => {
     const userId = socket.data.userId;
+
+    // Sai de qualquer sessão de "ouvir junto" que estava seguindo.
+    removeSocketFromListeners(socket.id);
+
     if (userId) {
       setPresence(userId, socket.id, false);
-      if (!isOnline(userId)) notifyFriendsPresence(userId, false);
+      if (!isOnline(userId)) {
+        notifyFriendsPresence(userId, false);
+        // Ficou offline: encerra a transmissão para quem ouvia junto.
+        const set = listeners.get(userId);
+        if (set) {
+          for (const socketId of set) io.to(socketId).emit("listen:ended", { userId });
+          listeners.delete(userId);
+        }
+        userPlayback.delete(userId);
+      }
     }
 
     const room = rooms.get(socket.data.roomCode);
